@@ -30,8 +30,6 @@ if (empty($_SESSION['avatar_path'])) {
     $base = '/-CITY-CARE/City-Main/uploads/Walking_PNGs/Engineer_Walking_Front.png';
 
 
-    $randKey = array_rand($avatars);
-    $_SESSION['avatar_path'] = $avatars[$randKey];
 }
 
 $avatarPath = $_SESSION['avatar_path'];
