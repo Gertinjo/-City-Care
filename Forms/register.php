@@ -1,247 +1,268 @@
 <?php
-// /-CITY-CARE/Forms/register.php – CityCare Registration
+// -CITY-CARE/Forms/register.php
 session_start();
 
-// config.php is in /-CITY-CARE/City-Main/database/config.php
 require_once __DIR__ . '/../database/config.php';
 
 $errors = [];
+$fullName = '';
+$email    = '';
+$city     = '';
+$selectedAvatar = '';
+
+// Avatar options (absolute web paths so they work everywhere)
+$avatarOptions = [
+    'engineer' => '/-CITY-CARE/City-Main/uploads/Walking_PNGs/Engineer_Walking/Engineer_Walking_Front.png',
+    'hipster'  => '/-CITY-CARE/City-Main/uploads/Walking_PNGs/Hipster_Walking/Hipster_Walking_Front.png',
+    'shadow'   => '/-CITY-CARE/City-Main/uploads/Walking_PNGs/Shadow_Walking/Shadow_Walking_Front.png',
+    'speedster'=> '/-CITY-CARE/City-Main/uploads/Walking_PNGs/Speedster_Walking/Speedster_Walking_Front.png',
+];
+
+// City options (Kosovo + nearby Albania)
+$cityOptions = [
+    'Prishtina',
+    'Podujeva',
+    'Ferizaj',
+    'Prizren',
+    'Peja',
+    'Gjakova',
+    'Mitrovica',
+    'Gjilan',
+    'Vushtrri',
+    'Kamenica',
+    'Malisheva',
+    'Kline',
+    'Suhareke',
+    'Viti',
+    'Kacanik',
+    'Dragash',
+    'Lipjan',
+    'Obiliq',
+    'Fushe Kosove',
+    // Albania near border
+    'Kukës',
+    'Tropojë',
+    'Shkodër',
+];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $fullName = trim($_POST['full_name'] ?? '');
-    $city     = trim($_POST['city'] ?? '');
     $email    = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
     $confirm  = $_POST['confirm_password'] ?? '';
+    $city     = $_POST['city'] ?? '';
+    $selectedAvatarKey = $_POST['avatar'] ?? '';
 
-    // Basic validation
+    // ---------- validation ----------
     if ($fullName === '') {
         $errors[] = 'Full name is required.';
     }
-    if ($city === '') {
-        $errors[] = 'Please select your city.';
-    }
+
     if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $errors[] = 'A valid email is required.';
+        $errors[] = 'Valid email address is required.';
     }
+
     if (strlen($password) < 6) {
         $errors[] = 'Password must be at least 6 characters.';
     }
+
     if ($password !== $confirm) {
         $errors[] = 'Passwords do not match.';
     }
 
+    if ($city === '' || !in_array($city, $cityOptions, true)) {
+        $errors[] = 'Please select your city.';
+    }
+
+    if ($selectedAvatarKey === '' || !isset($avatarOptions[$selectedAvatarKey])) {
+        $errors[] = 'Please choose an avatar.';
+    }
+
+    // If no validation errors so far, check if email already exists
     if (empty($errors)) {
         try {
             $db = getDB();
 
-            // Check if email already exists
             $stmt = $db->prepare("SELECT id FROM users WHERE email = :email LIMIT 1");
             $stmt->execute([':email' => $email]);
-
             if ($stmt->fetch()) {
-                $errors[] = 'There is already an account with this email.';
-            } else {
-                $hash = password_hash($password, PASSWORD_DEFAULT);
-
-                $stmt = $db->prepare("
-                    INSERT INTO users (full_name, city, email, password_hash, is_admin)
-                    VALUES (:full_name, :city, :email, :password_hash, 0)
-                ");
-                $stmt->execute([
-                    ':full_name'     => $fullName,
-                    ':city'          => $city,
-                    ':email'         => $email,
-                    ':password_hash' => $hash,
-                ]);
-
-                $userId = (int)$db->lastInsertId();
-
-                // Auto-login
-                $_SESSION['user'] = [
-                    'id'        => $userId,
-                    'full_name' => $fullName,
-                    'city'      => $city,
-                    'email'     => $email,
-                    'is_admin'  => 0,
-                ];
-
-                // Redirect to main dashboard
-                header('Location: /-CITY-CARE/City-Main/index.php');
-                exit;
+                $errors[] = 'An account with this email already exists.';
             }
-
         } catch (Throwable $e) {
-            $errors[] = 'Database error while creating account.';
+            $errors[] = 'Database error while checking existing user.';
         }
     }
+
+    // ---------- create user ----------
+    if (empty($errors)) {
+        try {
+            $db = getDB();
+
+            $hash   = password_hash($password, PASSWORD_DEFAULT);
+            $avatar = $avatarOptions[$selectedAvatarKey];   // final path
+
+            // IMPORTANT: matches your columns: full_name, city, email, password_hash, is_admin, avatar
+            $stmt = $db->prepare("
+                INSERT INTO users (full_name, city, email, password_hash, is_admin, avatar)
+                VALUES (:full_name, :city, :email, :password_hash, 0, :avatar)
+            ");
+
+            $stmt->execute([
+                ':full_name'     => $fullName,
+                ':city'          => $city,
+                ':email'         => $email,
+                ':password_hash' => $hash,
+                ':avatar'        => $avatar,
+            ]);
+
+            // Log them in right away
+            $newUserId = $db->lastInsertId();
+            $_SESSION['user'] = [
+                'id'        => $newUserId,
+                'full_name' => $fullName,
+                'email'     => $email,
+                'city'      => $city,
+                'is_admin'  => 0,
+                'avatar'    => $avatar,
+            ];
+
+            // Redirect to dashboard
+            header('Location: /-CITY-CARE/City-Main/index.php');
+            exit;
+
+        } catch (Throwable $e) {
+            // If you still get an error, temporarily uncomment the next line to see it:
+            // $errors[] = 'Database error: ' . $e->getMessage();
+            $errors[] = 'Could not create user (database error).';
+        }
+    }
+
+    // keep the selected avatar on form re-display
+    $selectedAvatar = $selectedAvatarKey;
 }
 
 ?>
 <!DOCTYPE html>
-<html lang="en" class="scroll-smooth">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>CityCare · Register</title>
+    <title>CityCare · Sign Up</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-
-    <script>
-        // Dark mode sync with rest of site
-        if (localStorage.theme === 'dark') {
-            document.documentElement.classList.add('dark');
-        }
-    </script>
 </head>
-<body class="bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen flex flex-col">
+<body class="min-h-screen bg-slate-100 flex items-center justify-center py-8 px-4">
 
-<!-- TOP NAVBAR -->
-<header class="border-b border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur sticky top-0 z-20">
-    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-14">
+<div class="w-full max-w-xl bg-white rounded-2xl shadow-xl border border-slate-200 p-6 sm:p-8">
+    <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-2">
-            <div class="h-8 w-8 rounded-lg bg-emerald-500 flex items-center justify-center text-white font-bold">
-                C
+            <div class="h-9 w-9 rounded-xl bg-emerald-500 flex items-center justify-center text-white font-bold">C</div>
+            <div>
+                <div class="font-semibold text-base">CityCare</div>
+                <div class="text-xs text-slate-500">Smart Reporting Platform</div>
+            </div>
+        </div>
+        <a href="../City-Main/index.php" class="text-xs text-slate-500 hover:text-slate-700">
+            ← Back to dashboard
+        </a>
+    </div>
+
+    <h1 class="text-xl font-semibold mb-1">Create your account</h1>
+    <p class="text-sm text-slate-500 mb-4">Join CityCare and start reporting issues in your city.</p>
+
+    <?php if (!empty($errors)): ?>
+        <div class="mb-4 rounded-xl border border-red-200 bg-red-50 text-red-700 text-sm px-3 py-2">
+            <ul class="list-disc list-inside space-y-1">
+                <?php foreach ($errors as $err): ?>
+                    <li><?php echo htmlspecialchars($err); ?></li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
+    <?php endif; ?>
+
+    <form action="register.php" method="post" class="space-y-4 text-sm">
+
+        <div class="grid sm:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Full name</label>
+                <input type="text" name="full_name" required
+                       value="<?php echo htmlspecialchars($fullName); ?>"
+                       class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
             </div>
             <div>
-                <div class="font-semibold text-sm sm:text-base">CityCare</div>
-                <div class="text-xs text-slate-500 dark:text-slate-400">Smart Reporting Platform</div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">City</label>
+                <select name="city" required
+                        class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
+                    <option value="">Choose your city…</option>
+                    <?php foreach ($cityOptions as $opt): ?>
+                        <option value="<?php echo htmlspecialchars($opt); ?>"
+                            <?php echo $city === $opt ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($opt); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
             </div>
         </div>
 
-        <div class="flex items-center gap-3">
-            <a href="/-CITY-CARE/City-Main/index.php"
-               class="hidden sm:inline-flex text-xs sm:text-sm text-slate-600 dark:text-slate-300 hover:underline">
-                Home
-            </a>
-            <button
-                class="h-8 w-8 flex items-center justify-center rounded-full border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300 text-lg"
-                onclick="
-                    document.documentElement.classList.toggle('dark');
-                    localStorage.theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-                "
-                title="Toggle dark mode"
-            >
-                🌗
+        <div>
+            <label class="block text-xs font-medium text-slate-600 mb-1">Email</label>
+            <input type="email" name="email" required
+                   value="<?php echo htmlspecialchars($email); ?>"
+                   class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
+        </div>
+
+        <div class="grid sm:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Password</label>
+                <input type="password" name="password" required
+                       class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Confirm password</label>
+                <input type="password" name="confirm_password" required
+                       class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
+            </div>
+        </div>
+
+        <!-- Avatar selection -->
+        <div>
+            <label class="block text-xs font-medium text-slate-600 mb-2">Choose your avatar</label>
+            <p class="text-[11px] text-slate-500 mb-2">
+                This character will represent you in CityCare (profile and future features).
+            </p>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <?php foreach ($avatarOptions as $key => $path): ?>
+                    <label class="cursor-pointer group">
+                        <input type="radio" name="avatar" value="<?php echo htmlspecialchars($key); ?>"
+                               class="peer hidden"
+                               <?php echo ($selectedAvatar === $key) ? 'checked' : ''; ?>>
+                        <div class="rounded-2xl border border-slate-200 peer-checked:border-emerald-500 peer-checked:ring-2 peer-checked:ring-emerald-400 bg-slate-50 flex flex-col items-center justify-center p-2 transition">
+                            <div class="h-20 w-full flex items-center justify-center overflow-hidden">
+                                <img src="<?php echo htmlspecialchars($path); ?>"
+                                     alt="<?php echo htmlspecialchars(ucfirst($key)); ?> avatar"
+                                     class="h-full w-auto object-contain group-hover:scale-105 transition-transform duration-150">
+                            </div>
+                            <div class="mt-1 text-xs font-medium text-slate-700">
+                                <?php echo htmlspecialchars(ucfirst($key)); ?>
+                            </div>
+                        </div>
+                    </label>
+                <?php endforeach; ?>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between pt-2">
+            <p class="text-[11px] text-slate-500">
+                Already have an account?
+                <a href="login.php" class="text-emerald-600 hover:text-emerald-700 font-medium">Log in</a>
+            </p>
+            <button type="submit"
+                    class="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium shadow-sm">
+                Sign up
             </button>
         </div>
-    </div>
-</header>
 
-<main class="flex-1 flex items-center justify-center px-4 py-10">
-    <div class="max-w-md w-full">
-        <div class="bg-white dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm p-6 sm:p-8">
-            <h1 class="text-xl sm:text-2xl font-semibold mb-1">Create your CityCare account</h1>
-            <p class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mb-4">
-                Register to report issues and help keep your city running smoothly.
-            </p>
-
-            <?php if (!empty($errors)): ?>
-                <div class="mb-4 text-xs sm:text-sm px-3 py-2 rounded-lg bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300">
-                    <?php foreach ($errors as $err): ?>
-                        <div>• <?php echo htmlspecialchars($err); ?></div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-
-            <form action="register.php" method="post" class="space-y-4 text-sm">
-                <div>
-                    <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                        Full name
-                    </label>
-                    <input type="text" name="full_name" required
-                           value="<?php echo htmlspecialchars($_POST['full_name'] ?? ''); ?>"
-                           class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/70">
-                </div>
-
-                <!-- City select -->
-                <div>
-                    <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                        City
-                    </label>
-                    <select name="city" required
-                            class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/70">
-                        <option value="">Select your city</option>
-
-                        <optgroup label="Kosovo">
-                            <option value="Prishtina"   <?php echo (($_POST['city'] ?? '') === 'Prishtina') ? 'selected' : ''; ?>>Prishtina</option>
-                            <option value="Prizren"     <?php echo (($_POST['city'] ?? '') === 'Prizren') ? 'selected' : ''; ?>>Prizren</option>
-                            <option value="Peja"        <?php echo (($_POST['city'] ?? '') === 'Peja') ? 'selected' : ''; ?>>Peja</option>
-                            <option value="Gjakova"     <?php echo (($_POST['city'] ?? '') === 'Gjakova') ? 'selected' : ''; ?>>Gjakova</option>
-                            <option value="Mitrovica"   <?php echo (($_POST['city'] ?? '') === 'Mitrovica') ? 'selected' : ''; ?>>Mitrovica</option>
-                            <option value="Ferizaj"     <?php echo (($_POST['city'] ?? '') === 'Ferizaj') ? 'selected' : ''; ?>>Ferizaj</option>
-                            <option value="Gjilan"      <?php echo (($_POST['city'] ?? '') === 'Gjilan') ? 'selected' : ''; ?>>Gjilan</option>
-                            <option value="Vushtrri"    <?php echo (($_POST['city'] ?? '') === 'Vushtrri') ? 'selected' : ''; ?>>Vushtrri</option>
-                            <option value="Podujeva"    <?php echo (($_POST['city'] ?? '') === 'Podujeva') ? 'selected' : ''; ?>>Podujeva</option>
-                            <option value="Suhareka"    <?php echo (($_POST['city'] ?? '') === 'Suhareka') ? 'selected' : ''; ?>>Suhareka</option>
-                            <option value="Rahovec"     <?php echo (($_POST['city'] ?? '') === 'Rahovec') ? 'selected' : ''; ?>>Rahovec</option>
-                            <option value="Istog"       <?php echo (($_POST['city'] ?? '') === 'Istog') ? 'selected' : ''; ?>>Istog</option>
-                            <option value="Kamenica"    <?php echo (($_POST['city'] ?? '') === 'Kamenica') ? 'selected' : ''; ?>>Kamenica</option>
-                            <option value="Malisheva"   <?php echo (($_POST['city'] ?? '') === 'Malisheva') ? 'selected' : ''; ?>>Malisheva</option>
-                            <option value="Skenderaj"   <?php echo (($_POST['city'] ?? '') === 'Skenderaj') ? 'selected' : ''; ?>>Skenderaj</option>
-                            <option value="Dragash"     <?php echo (($_POST['city'] ?? '') === 'Dragash') ? 'selected' : ''; ?>>Dragash</option>
-                        </optgroup>
-
-                        <optgroup label="Albania (border regions)">
-                            <option value="Kukes"       <?php echo (($_POST['city'] ?? '') === 'Kukes') ? 'selected' : ''; ?>>Kukës</option>
-                            <option value="Tropoje"     <?php echo (($_POST['city'] ?? '') === 'Tropoje') ? 'selected' : ''; ?>>Tropojë</option>
-                            <option value="Shkoder"     <?php echo (($_POST['city'] ?? '') === 'Shkoder') ? 'selected' : ''; ?>>Shkodër</option>
-                            <option value="Puke"        <?php echo (($_POST['city'] ?? '') === 'Puke') ? 'selected' : ''; ?>>Pukë</option>
-                            <option value="Lezhe"       <?php echo (($_POST['city'] ?? '') === 'Lezhe') ? 'selected' : ''; ?>>Lezhë</option>
-                            <option value="Has"         <?php echo (($_POST['city'] ?? '') === 'Has') ? 'selected' : ''; ?>>Has</option>
-                        </optgroup>
-                    </select>
-                    <div class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
-                        This helps your municipality see where reports are coming from.
-                    </div>
-                </div>
-
-                <div>
-                    <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                        Email address
-                    </label>
-                    <input type="email" name="email" required
-                           value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>"
-                           class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/70">
-                </div>
-
-                <div class="grid sm:grid-cols-2 gap-3">
-                    <div>
-                        <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                            Password
-                        </label>
-                        <input type="password" name="password" required
-                               class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/70">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                            Confirm password
-                        </label>
-                        <input type="password" name="confirm_password" required
-                               class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/70">
-                    </div>
-                </div>
-
-                <p class="text-[11px] text-slate-500 dark:text-slate-400">
-                    Your data is securely protected. Please report only real issues in your city.
-                </p>
-
-                <button type="submit"
-                        class="w-full inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium shadow-sm">
-                    Sign up
-                </button>
-            </form>
-        </div>
-
-        <p class="mt-4 text-xs text-center text-slate-500 dark:text-slate-400">
-            Already have an account?
-            <a href="/-CITY-CARE/Forms/login.php" class="text-emerald-600 dark:text-emerald-400 font-medium hover:underline">
-                Log in
-            </a>
-        </p>
-    </div>
-</main>
+    </form>
+</div>
 
 </body>
 </html>

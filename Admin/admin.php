@@ -1,10 +1,13 @@
 <?php
-// /-CITY-CARE/Admin/admin.php – CityCare Admin Panel
+// /-CITY-CARE/City-Main/admin.php – CityCare Admin Panel
 session_start();
 
+// config.php is in City-Main/database
 require_once __DIR__ . '/../database/config.php';
 
-// require admin login
+// -----------------------------------------------------
+// REQUIRE ADMIN LOGIN (real users, not ?as=admin)
+// -----------------------------------------------------
 if (empty($_SESSION['user']) || (int)($_SESSION['user']['is_admin'] ?? 0) !== 1) {
     header('Location: /-CITY-CARE/Forms/login.php');
     exit;
@@ -14,6 +17,32 @@ $currentUser = $_SESSION['user'];
 $adminName   = $currentUser['full_name'] ?? 'Admin';
 $adminCity   = $currentUser['city'] ?? null;
 
+$adminMsg = null;
+$adminErr = null;
+
+// -----------------------------------------------------
+// CONNECT & CHECK IF `city` COLUMN EXISTS
+// -----------------------------------------------------
+try {
+    $db = getDB();
+} catch (Throwable $e) {
+    die("Database connection failed: " . htmlspecialchars($e->getMessage()));
+}
+
+$hasCityColumn = false;
+try {
+    $stmt = $db->query("SHOW COLUMNS FROM issues LIKE 'city'");
+    if ($stmt && $stmt->fetch()) {
+        $hasCityColumn = true;
+    }
+} catch (Throwable $e) {
+    // ignore, just assume no city column
+    $hasCityColumn = false;
+}
+
+// -----------------------------------------------------
+// CITY FILTER OPTIONS (used only if city column exists)
+// -----------------------------------------------------
 $cityOptions = [
     'all'       => 'All cities',
     'Prishtina' => 'Prishtina',
@@ -46,17 +75,23 @@ if (!array_key_exists($selectedCityKey, $cityOptions)) {
 }
 $selectedCityLabel = $cityOptions[$selectedCityKey];
 
-$adminMsg = null;
-$adminErr = null;
+// If city column does NOT exist, we force "all"
+if (!$hasCityColumn) {
+    $selectedCityKey   = 'all';
+    $selectedCityLabel = 'All cities (city column not found)';
+}
 
-// handle start/resolve actions
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['admin_action'], $_POST['issue_id'])) {
+// -----------------------------------------------------
+// HANDLE ADMIN ACTIONS (start / resolve)
+// -----------------------------------------------------
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset($_POST['admin_action'], $_POST['issue_id'])
+) {
     $action  = $_POST['admin_action'];
     $issueId = (int)$_POST['issue_id'];
 
     try {
-        $db = getDB();
-
         if ($action === 'start') {
             $stmt = $db->prepare("UPDATE issues SET status='in_progress', updated_at=NOW() WHERE id=:id AND status='open'");
             $stmt->execute([':id' => $issueId]);
@@ -66,6 +101,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['admin_action'], $_POS
             } else {
                 $adminErr = "Cannot start work on this issue.";
             }
+
         } elseif ($action === 'resolve') {
             $stmt = $db->prepare("SELECT status, created_at, updated_at FROM issues WHERE id=:id");
             $stmt->execute([':id' => $issueId]);
@@ -102,19 +138,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['admin_action'], $_POS
     }
 }
 
-// load stats + issues
+// -----------------------------------------------------
+// LOAD STATS + ISSUES (uses city filter if available)
+// -----------------------------------------------------
 $adminIssues = [];
 $stats = ['open' => 0, 'in_progress' => 0, 'resolved' => 0];
 
 try {
-    $db = getDB();
-
     // stats
-    if ($selectedCityKey === 'all') {
-        $stmt = $db->query("SELECT status, COUNT(*) AS c FROM issues GROUP BY status");
-    } else {
-        $stmt = $db->prepare("SELECT status, COUNT(*) AS c FROM issues WHERE location_text = :city GROUP BY status");
+    if ($hasCityColumn && $selectedCityKey !== 'all') {
+        $stmt = $db->prepare("SELECT status, COUNT(*) AS c FROM issues WHERE city = :city GROUP BY status");
         $stmt->execute([':city' => $selectedCityKey]);
+    } else {
+        $stmt = $db->query("SELECT status, COUNT(*) AS c FROM issues GROUP BY status");
     }
 
     foreach ($stmt as $row) {
@@ -123,23 +159,33 @@ try {
         }
     }
 
-    // issues
-    if ($selectedCityKey === 'all') {
-        $stmt = $db->query("
-            SELECT id, title, category, status, location_text, latitude, longitude, created_at, updated_at
-            FROM issues
-            ORDER BY created_at DESC
-            LIMIT 200
-        ");
-    } else {
+    // issues list
+    if ($hasCityColumn && $selectedCityKey !== 'all') {
         $stmt = $db->prepare("
-            SELECT id, title, category, status, location_text, latitude, longitude, created_at, updated_at
+            SELECT id, title, category, city, status, location_text, latitude, longitude, created_at, updated_at
             FROM issues
-            WHERE location_text = :city
+            WHERE city = :city
             ORDER BY created_at DESC
             LIMIT 200
         ");
         $stmt->execute([':city' => $selectedCityKey]);
+    } else {
+        // if no city column, don't select it
+        if ($hasCityColumn) {
+            $stmt = $db->query("
+                SELECT id, title, category, city, status, location_text, latitude, longitude, created_at, updated_at
+                FROM issues
+                ORDER BY created_at DESC
+                LIMIT 200
+            ");
+        } else {
+            $stmt = $db->query("
+                SELECT id, title, category, status, location_text, latitude, longitude, created_at, updated_at
+                FROM issues
+                ORDER BY created_at DESC
+                LIMIT 200
+            ");
+        }
     }
 
     foreach ($stmt as $row) {
@@ -156,7 +202,8 @@ try {
             'title'        => $row['title'],
             'category'     => $row['category'],
             'status'       => $row['status'],
-            'city'         => $row['location_text'],
+            'city'         => $hasCityColumn ? $row['city'] : null,
+            'location'     => $row['location_text'],
             'lat'          => $row['latitude'],
             'lng'          => $row['longitude'],
             'created_at'   => $row['created_at'],
@@ -177,31 +224,56 @@ try {
     <meta charset="UTF-8">
     <title>CityCare · Admin Panel</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <!-- Tailwind -->
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Leaflet -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
     <style>
-        @keyframes slideDown { from {opacity:0;transform:translateY(-6px);} to {opacity:1;transform:translateY(0);} }
+        @keyframes slideDown {
+            from {opacity:0;transform:translateY(-6px);}
+            to   {opacity:1;transform:translateY(0);}
+        }
         .animate-slide-down { animation: slideDown 0.25s ease-out; }
         .status-badge {
-            display: inline-flex; align-items: center; gap: .35rem;
-            padding: .35rem .7rem; border-radius: 999px; font-size: .75rem; font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: .35rem;
+            padding: .35rem .7rem;
+            border-radius: 999px;
+            font-size: .75rem;
+            font-weight: 500;
         }
     </style>
 </head>
 <body class="bg-slate-100 text-slate-900 min-h-screen">
 
+<!-- HEADER -->
 <header class="border-b border-slate-200 bg-white sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
         <div class="space-y-1">
-            <h1 class="text-2xl font-bold text-slate-900">
-                CityCare Admin
-            </h1>
-            <p class="text-xs text-slate-500">
-                Hi, <?php echo htmlspecialchars($adminName); ?>
+            <div class="flex items-center gap-2">
+                <div class="h-8 w-8 rounded-lg bg-emerald-500 flex items-center justify-center text-white font-bold">
+                    C
+                </div>
+                <div>
+                    <h1 class="text-xl sm:text-2xl font-bold text-slate-900">
+                        CityCare Admin
+                    </h1>
+                    <p class="text-xs text-slate-500">
+                        Managing incoming reports across municipalities
+                    </p>
+                </div>
+            </div>
+            <p class="mt-1 text-xs text-slate-500">
+                Hi, <span class="font-semibold"><?php echo htmlspecialchars($adminName); ?></span>
                 <?php if ($adminCity): ?> · <?php echo htmlspecialchars($adminCity); ?><?php endif; ?>
             </p>
         </div>
+
         <div class="flex items-center gap-3">
             <div class="hidden md:flex items-center gap-2 px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg">
                 <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-medium">
@@ -224,11 +296,12 @@ try {
 
 <main class="max-w-7xl mx-auto px-6 py-8 space-y-6">
 
-    <!-- City filter -->
+    <!-- City filter (works only if city column exists) -->
     <form method="get" class="flex flex-wrap items-center gap-3 mb-4 text-sm">
         <span class="text-slate-600">Filter by city:</span>
         <select name="city" onchange="this.form.submit()"
-                class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm bg-white">
+                class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm bg-white"
+                <?php echo $hasCityColumn ? '' : 'disabled'; ?>>
             <?php foreach ($cityOptions as $key => $label): ?>
                 <option value="<?php echo htmlspecialchars($key); ?>"
                     <?php echo $key === $selectedCityKey ? 'selected' : ''; ?>>
@@ -239,6 +312,11 @@ try {
         <span class="text-[11px] text-slate-500">
             Currently showing: <?php echo htmlspecialchars($selectedCityLabel); ?>
         </span>
+        <?php if (!$hasCityColumn): ?>
+            <span class="text-[11px] text-red-500">
+                (Note: "city" column not found in issues table – filter disabled)
+            </span>
+        <?php endif; ?>
     </form>
 
     <!-- alerts -->
@@ -278,7 +356,7 @@ try {
                 <tbody class="divide-y divide-slate-100">
                 <?php if (empty($adminIssues)): ?>
                     <tr><td colspan="7" class="px-6 py-10 text-center text-sm text-slate-500">
-                        No reports for this city yet.
+                        No reports found.
                     </td></tr>
                 <?php else: ?>
                     <?php foreach ($adminIssues as $row): ?>
@@ -289,7 +367,7 @@ try {
                             'resolved'    => ['Resolved', 'bg-emerald-50 text-emerald-700 border border-emerald-200'],
                             default       => [ucfirst($row['status']), 'bg-slate-100 text-slate-700 border border-slate-200'],
                         };
-                        $since = $row['updated_at'] ?: $row['created_at'];
+                        $since     = $row['updated_at'] ?: $row['created_at'];
                         $hasCoords = !is_null($row['lat']) && !is_null($row['lng']);
                         ?>
                         <tr class="hover:bg-slate-50 transition-colors align-top">
@@ -308,7 +386,7 @@ try {
                                 <?php endif; ?>
                             </td>
                             <td class="px-6 py-4 text-slate-700 text-sm">
-                                <?php echo htmlspecialchars($row['city']); ?>
+                                <?php echo $row['city'] !== null ? htmlspecialchars($row['city']) : '—'; ?>
                             </td>
                             <td class="px-6 py-4 text-slate-700 text-sm">
                                 <?php echo htmlspecialchars($row['category']); ?>

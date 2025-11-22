@@ -1,93 +1,43 @@
 <?php
-// CityCare - Smart Reporting Platform
+// CityCare - Smart Reporting Platform (city-based dashboard)
 session_start();
 
 require_once __DIR__ . '/../database/config.php';
 
 // -----------------------------------------------------
-// SIMPLE DEV ROLE SWITCH (for now)
+// CURRENT USER & CITY
 // -----------------------------------------------------
-if (isset($_GET['as']) && in_array($_GET['as'], ['admin', 'citizen'])) {
-    $_SESSION['role'] = $_GET['as'];
-}
-$role = $_SESSION['role'] ?? 'citizen';
+$currentUser = $_SESSION['user'] ?? null;
+
+$userId   = $currentUser['id']        ?? null;
+$userName = $currentUser['full_name'] ?? 'Guest';
+$userCity = $currentUser['city']      ?? 'Prishtina';   // fallback if not logged in
+
+$cityName = $userCity;  // used in UI
+
+// Simple city → coordinates (approx)
+$cityCoords = [
+    'Prishtina' => [42.6629, 21.1655],
+    'Ferizaj'   => [42.3700, 21.1550],
+    'Prizren'   => [42.2122, 20.7397],
+    'Peja'      => [42.6590, 20.2880],
+    'Gjakova'   => [42.3800, 20.4300],
+    'Mitrovica' => [42.8859, 20.8667],
+    'Gjilan'    => [42.4636, 21.4661],
+    'Podujeva'  => [42.9100, 21.2000],
+];
+
+[$mapLat, $mapLng] = $cityCoords[$userCity] ?? $cityCoords['Prishtina'];
 
 // -----------------------------------------------------
 // PAGE ROUTER
 // -----------------------------------------------------
-$page = $_GET['page'] ?? 'dashboard';
-
-$cityName      = "Prishtina";
-$reportError   = null;
-$reportSuccess = isset($_GET['reported']) ? true : false;
-$adminMsg      = null;
-$adminErr      = null;
+$page           = $_GET['page'] ?? 'dashboard';
+$reportError    = null;
+$reportSuccess  = isset($_GET['reported']) ? true : false;
 
 // -----------------------------------------------------
-// HANDLE ADMIN ACTIONS (only on dashboard, only admin)
-// -----------------------------------------------------
-if (
-    $role === 'admin' &&
-    $page === 'dashboard' &&
-    $_SERVER['REQUEST_METHOD'] === 'POST' &&
-    isset($_POST['admin_action'], $_POST['issue_id'])
-) {
-    $action  = $_POST['admin_action'];
-    $issueId = (int)$_POST['issue_id'];
-
-    try {
-        $db = getDB();
-
-        if ($action === 'start') {
-            // Only change from open -> in_progress
-            $stmt = $db->prepare("UPDATE issues SET status='in_progress' WHERE id=:id AND status='open'");
-            $stmt->execute([':id' => $issueId]);
-
-            if ($stmt->rowCount() > 0) {
-                $adminMsg = "Issue #{$issueId} is now in WORKING state.";
-            } else {
-                $adminErr = "Cannot start work on this issue (maybe not open anymore).";
-            }
-
-        } elseif ($action === 'resolve') {
-            // Load issue and check 60s rule
-            $stmt = $db->prepare("SELECT status, updated_at, created_at FROM issues WHERE id=:id");
-            $stmt->execute([':id' => $issueId]);
-            $issue = $stmt->fetch();
-
-            if (!$issue) {
-                $adminErr = "Issue not found.";
-            } elseif ($issue['status'] !== 'in_progress') {
-                $adminErr = "Issue must be in WORKING state before resolving.";
-            } else {
-                $updatedAt = $issue['updated_at'] ?: $issue['created_at'];
-                $updated   = new DateTime($updatedAt);
-                $now       = new DateTime();
-                $diffSec   = $now->getTimestamp() - $updated->getTimestamp();
-
-                if ($diffSec < 60) {
-                    $left = 60 - $diffSec;
-                    $adminErr = "You can resolve this issue after {$left} more seconds.";
-                } else {
-                    $stmt = $db->prepare("UPDATE issues SET status='resolved' WHERE id=:id AND status='in_progress'");
-                    $stmt->execute([':id' => $issueId]);
-
-                    if ($stmt->rowCount() > 0) {
-                        $adminMsg = "Issue #{$issueId} has been RESOLVED.";
-                    } else {
-                        $adminErr = "Could not resolve this issue.";
-                    }
-                }
-            }
-        }
-
-    } catch (Throwable $e) {
-        $adminErr = 'Admin action failed (database error).';
-    }
-}
-
-// -----------------------------------------------------
-// HANDLE REPORT FORM SUBMIT (citizen)
+// HANDLE REPORT FORM SUBMIT
 // -----------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $page === 'report') {
     $title       = trim($_POST['title'] ?? '');
@@ -116,7 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $page === 'report') {
             $tmpPath      = $_FILES['photo']['tmp_name'];
             $ext          = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
 
-            if (in_array($ext, $allowedExt)) {
+            if (in_array($ext, $allowedExt, true)) {
                 $newName = 'issue_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
                 $target  = $uploadDir . '/' . $newName;
                 if (move_uploaded_file($tmpPath, $target)) {
@@ -127,21 +77,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $page === 'report') {
 
         try {
             $db = getDB();
+
             $stmt = $db->prepare("
                 INSERT INTO issues 
-                    (title, category, status, location_text, latitude, longitude, description, photo_path, is_anonymous, created_by) 
+                    (title, category, city, status, location_text, latitude, longitude, description, photo_path, is_anonymous, created_by) 
                 VALUES 
-                    (:title, :category, 'open', :location_text, :latitude, :longitude, :description, :photo_path, :is_anonymous, NULL)
+                    (:title, :category, :city, 'open', :location_text, :latitude, :longitude, :description, :photo_path, :is_anonymous, :created_by)
             ");
+
             $stmt->execute([
                 ':title'         => $title,
                 ':category'      => $category,
+                ':city'          => $userCity,
                 ':location_text' => $location !== '' ? $location : null,
                 ':latitude'      => $lat,
                 ':longitude'     => $lng,
                 ':description'   => $description !== '' ? $description : null,
                 ':photo_path'    => $photoPath,
                 ':is_anonymous'  => $anonymous,
+                ':created_by'    => $userId,
             ]);
 
             header('Location: index.php?page=dashboard&reported=1');
@@ -153,24 +107,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $page === 'report') {
 }
 
 // -----------------------------------------------------
-// LOAD DATA FOR DASHBOARD
+// LOAD DATA FOR DASHBOARD (FILTER BY USER CITY)
 // -----------------------------------------------------
-$stats = [
+$stats        = [
     'open'              => 0,
     'in_progress'       => 0,
     'resolved'          => 0,
     'city_health_score' => 100,
 ];
-
-$issues        = [];
-$issuesForMap  = [];
-$adminIssues   = [];
+$issues       = [];
+$issuesForMap = [];
 
 try {
     $db = getDB();
 
-    // stats
-    $stmt = $db->query("SELECT status, COUNT(*) AS c FROM issues GROUP BY status");
+    // stats for this city
+    $stmt = $db->prepare("SELECT status, COUNT(*) AS c FROM issues WHERE city = :city GROUP BY status");
+    $stmt->execute([':city' => $userCity]);
+
     foreach ($stmt as $row) {
         if ($row['status'] === 'open') {
             $stats['open'] = (int)$row['c'];
@@ -181,6 +135,7 @@ try {
         }
     }
 
+    // simple city health score based on open / in_progress counts
     $total = $stats['open'] + $stats['in_progress'] + $stats['resolved'];
     if ($total === 0) {
         $stats['city_health_score'] = 100;
@@ -191,13 +146,16 @@ try {
         $stats['city_health_score'] = $score;
     }
 
-    // latest issues for small list
-    $stmt = $db->query("
+    // latest issues for this city
+    $stmt = $db->prepare("
         SELECT id, title, category, status, location_text, created_at
         FROM issues
+        WHERE city = :city
         ORDER BY created_at DESC
         LIMIT 5
     ");
+    $stmt->execute([':city' => $userCity]);
+
     foreach ($stmt as $row) {
         $issues[] = [
             'title'    => $row['title'],
@@ -213,14 +171,24 @@ try {
         ];
     }
 
-    // issues with coords for dashboard map
-    $stmt = $db->query("
-        SELECT id, title, category, status, location_text, latitude, longitude, created_at
+    // issues with coordinates for map
+    // IMPORTANT CHANGE: hide resolved issues after 10 minutes
+    $stmt = $db->prepare("
+        SELECT id, title, category, status, location_text, latitude, longitude, created_at, updated_at
         FROM issues
-        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+        WHERE city = :city
+          AND latitude IS NOT NULL
+          AND longitude IS NOT NULL
+          AND (
+                status <> 'resolved'
+                OR updated_at IS NULL
+                OR updated_at >= (NOW() - INTERVAL 10 MINUTE)
+              )
         ORDER BY created_at DESC
         LIMIT 200
     ");
+    $stmt->execute([':city' => $userCity]);
+
     foreach ($stmt as $row) {
         $issuesForMap[] = [
             'id'       => (int)$row['id'],
@@ -232,40 +200,8 @@ try {
             'lng'      => (float)$row['longitude'],
         ];
     }
-
-    // admin list: full table with timing info
-    if ($role === 'admin') {
-        $stmt = $db->query("
-            SELECT id, title, category, status, location_text, created_at, updated_at
-            FROM issues
-            ORDER BY created_at DESC
-            LIMIT 30
-        ");
-        foreach ($stmt as $row) {
-            $updated   = $row['updated_at'] ?: $row['created_at'];
-            $updatedDt = new DateTime($updated);
-            $now       = new DateTime();
-            $diffSec   = $now->getTimestamp() - $updatedDt->getTimestamp();
-
-            $canResolve  = ($row['status'] === 'in_progress' && $diffSec >= 60);
-            $secondsLeft = ($row['status'] === 'in_progress' && $diffSec < 60) ? (60 - $diffSec) : 0;
-
-            $adminIssues[] = [
-                'id'          => (int)$row['id'],
-                'title'       => $row['title'],
-                'category'    => $row['category'],
-                'status'      => $row['status'],
-                'location'    => $row['location_text'],
-                'created_at'  => $row['created_at'],
-                'updated_at'  => $row['updated_at'],
-                'can_resolve' => $canResolve,
-                'seconds_left'=> $secondsLeft,
-            ];
-        }
-    }
-
 } catch (Throwable $e) {
-    // leave arrays empty
+    // leave arrays empty if DB fails
 }
 
 ?>
@@ -309,17 +245,12 @@ try {
         </div>
 
         <div class="flex items-center gap-4">
-            <div class="hidden sm:flex items-center gap-2 text-xs sm:text-sm">
-                <span class="uppercase tracking-wide text-slate-500 dark:text-slate-400">City Health</span>
-                <span class="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
-                    <?php echo $stats['city_health_score']; ?>/100
+            <div class="hidden sm:flex flex-col items-end text-xs sm:text-sm">
+                <span class="font-medium">Hi, <?php echo htmlspecialchars($userName); ?> · <?php echo htmlspecialchars($cityName); ?></span>
+                <span class="text-slate-500 dark:text-slate-400 text-[11px]">
+                    City Health: <?php echo $stats['city_health_score']; ?>/100
                 </span>
             </div>
-
-            <span class="hidden sm:inline-flex px-2.5 py-1 rounded-full text-xs font-medium 
-                         <?php echo $role === 'admin' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300'; ?>">
-                <?php echo ucfirst($role); ?> view
-            </span>
 
             <button
                 class="h-8 w-8 flex items-center justify-center rounded-full border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300 text-lg"
@@ -343,7 +274,7 @@ try {
             <div class="bg-white dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm">
                 <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">Welcome</div>
                 <div class="font-semibold text-sm mb-1">
-                    <?php echo $role === 'admin' ? 'City Citizen' : 'Citizen'; ?> Panel
+                    Citizen Panel
                 </div>
                 <p class="text-xs text-slate-500 dark:text-slate-400">
                     CityCare prototype for <?php echo htmlspecialchars($cityName); ?>.
@@ -361,11 +292,16 @@ try {
                     <span>Report a Problem</span>
                     <span class="text-xs text-slate-400">New issue</span>
                 </a>
+                <a href="profile.php"
+                   class="flex items-center justify-between px-3 py-2 rounded-xl <?php echo $page === 'profile' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200' : 'hover:bg-slate-100 dark:hover:bg-slate-800'; ?>">
+                    <span>Profile</span>
+                    <span class="text-xs text-slate-400"><?php  echo htmlspecialchars($userName);?></span>
+                </a>
             </nav>
 
             <div class="text-[11px] text-slate-400 dark:text-slate-500">
-        Forgot your password? Contact support at support@citycare.com
-
+                Help your city by reporting problems you see in everyday life:
+                broken lights, potholes, trash, vandalism and more.
             </div>
         </aside>
 
@@ -378,21 +314,11 @@ try {
                     <div>
                         <h1 class="text-xl sm:text-2xl font-semibold">Dashboard · <?php echo htmlspecialchars($cityName); ?></h1>
                         <p class="text-sm text-slate-500 dark:text-slate-400">
-                            Track reported issues and their status on the map of Prishtina.
+                            Track reported issues and their status in your city.
                         </p>
                         <?php if ($reportSuccess): ?>
                             <p class="mt-1 text-xs text-emerald-600 dark:text-emerald-400">
                                 ✅ Your report has been submitted successfully.
-                            </p>
-                        <?php endif; ?>
-                        <?php if ($adminMsg): ?>
-                            <p class="mt-1 text-xs text-emerald-600 dark:text-emerald-400">
-                                ✅ <?php echo htmlspecialchars($adminMsg); ?>
-                            </p>
-                        <?php endif; ?>
-                        <?php if ($adminErr): ?>
-                            <p class="mt-1 text-xs text-red-600 dark:text-red-400">
-                                ⚠ <?php echo htmlspecialchars($adminErr); ?>
                             </p>
                         <?php endif; ?>
                     </div>
@@ -432,11 +358,11 @@ try {
                     <div class="bg-white dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm overflow-hidden">
                         <div class="px-4 py-3 flex items-center justify-between border-b border-slate-100 dark:border-slate-800">
                             <h2 class="text-sm font-semibold">Recent Reports</h2>
-                            <span class="text-xs text-slate-400">latest from database</span>
+                            <span class="text-xs text-slate-400">latest in <?php echo htmlspecialchars($cityName); ?></span>
                         </div>
                         <?php if (empty($issues)): ?>
                             <div class="px-4 py-6 text-sm text-slate-500 dark:text-slate-400">
-                                No reports yet. Be the first to report an issue.
+                                No reports yet for this city. Be the first to report an issue.
                             </div>
                         <?php else: ?>
                             <ul class="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
@@ -474,7 +400,7 @@ try {
                     <div class="space-y-4">
                         <div class="bg-white dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm">
                             <div class="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                                <h2 class="text-sm font-semibold">Prishtina Map</h2>
+                                <h2 class="text-sm font-semibold"><?php echo htmlspecialchars($cityName); ?> Map</h2>
                                 <span class="text-[11px] text-slate-400">click markers for details</span>
                             </div>
                             <div id="cityMap" class="h-56 bg-slate-100 dark:bg-slate-900 rounded-b-2xl"></div>
@@ -483,22 +409,20 @@ try {
                         <div class="bg-gradient-to-br from-slate-900 to-slate-800 glass-card rounded-2xl p-4 text-slate-100 shadow-md">
                             <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">Prototype Note</div>
                             <p class="text-sm mb-2">
-                                Each report with coordinates appears as a marker on the map of Prishtina.
+                                Each open or recently resolved report appears as a marker on the map.
+                                Resolved issues disappear from the map after 10 minutes.
                             </p>
                             <ul class="text-xs space-y-1 text-slate-200">
-                                <li>• Red = Open, Orange = Working, Green = Resolved</li>
+                                <li>• Red = Open, Orange = Working, Green = Recently Resolved</li>
                                 <li>• Click a marker to see issue details</li>
                             </ul>
                         </div>
                     </div>
                 </div>
 
-                <?php if ($role === 'admin'): ?>
-                <?php endif; ?>
-
             <?php elseif ($page === 'report'): ?>
 
-                <!-- REPORT PAGE (unchanged from previous, shortened a bit) -->
+                <!-- REPORT PAGE -->
                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                     <div>
                         <h1 class="text-xl sm:text-2xl font-semibold">Report a Problem</h1>
@@ -574,7 +498,7 @@ try {
                                 <ol class="list-decimal ml-4 space-y-0.5">
                                     <li>Your report is saved in the CityCare database.</li>
                                     <li>City operators can start working on it.</li>
-                                    <li>When it’s fixed, status becomes Resolved.</li>
+                                    <li>When it’s fixed, the status becomes Resolved.</li>
                                 </ol>
                             </div>
                         </div>
@@ -601,7 +525,7 @@ try {
 
 <footer class="border-t border-slate-200 dark:border-slate-800 text-[11px] text-slate-400 dark:text-slate-500 py-3">
     <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-1.5">
-        <span>CityCare Prototype · PHP &amp; MySQL · Prishtina</span>
+        <span>CityCare Prototype · PHP &amp; MySQL · <?php echo htmlspecialchars($cityName); ?></span>
         <span>Made for Champion Trails · <?php echo date('Y'); ?></span>
     </div>
 </footer>
@@ -610,7 +534,10 @@ try {
 <?php if ($page === 'dashboard'): ?>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-    const map = L.map('cityMap').setView([42.6629, 21.1655], 13); // Prishtina
+    const centerLat = <?php echo json_encode($mapLat); ?>;
+    const centerLng = <?php echo json_encode($mapLng); ?>;
+
+    const map = L.map('cityMap').setView([centerLat, centerLng], 13);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
@@ -642,7 +569,10 @@ document.addEventListener('DOMContentLoaded', function () {
 <?php elseif ($page === 'report'): ?>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-    const map = L.map('reportMap').setView([42.6629, 21.1655], 13); // Prishtina
+    const centerLat = <?php echo json_encode($mapLat); ?>;
+    const centerLng = <?php echo json_encode($mapLng); ?>;
+
+    const map = L.map('reportMap').setView([centerLat, centerLng], 13);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
