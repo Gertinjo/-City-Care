@@ -343,7 +343,7 @@ try {
             <div class="bg-white dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm">
                 <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">Welcome</div>
                 <div class="font-semibold text-sm mb-1">
-                    <?php echo $role === 'admin' ? 'City Operator' : 'Citizen'; ?> Panel
+                    <?php echo $role === 'admin' ? 'City Citizen' : 'Citizen'; ?> Panel
                 </div>
                 <p class="text-xs text-slate-500 dark:text-slate-400">
                     CityCare prototype for <?php echo htmlspecialchars($cityName); ?>.
@@ -364,9 +364,8 @@ try {
             </nav>
 
             <div class="text-[11px] text-slate-400 dark:text-slate-500">
-                Dev shortcuts:
-                <a href="?as=citizen" class="underline">Citizen</a> ·
-                <a href="?as=admin" class="underline">Admin</a>
+        Forgot your password? Contact support at support@citycare.com
+
             </div>
         </aside>
 
@@ -488,7 +487,7 @@ try {
                             </p>
                             <ul class="text-xs space-y-1 text-slate-200">
                                 <li>• Red = Open, Orange = Working, Green = Resolved</li>
-                                <li>• Admin can start working and resolve issues in the panel below</li>
+                                <li>• Click a marker to see issue details</li>
                             </ul>
                         </div>
                     </div>

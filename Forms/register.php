@@ -1,14 +1,15 @@
 <?php
-// register.php – CityCare Registration
+// /-CITY-CARE/Forms/register.php – CityCare Registration
 session_start();
 
+// config.php is in /-CITY-CARE/City-Main/database/config.php
 require_once __DIR__ . '/../database/config.php';
 
 $errors = [];
-$success = false;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $fullName = trim($_POST['full_name'] ?? '');
+    $city     = trim($_POST['city'] ?? '');
     $email    = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
     $confirm  = $_POST['confirm_password'] ?? '';
@@ -16,6 +17,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Basic validation
     if ($fullName === '') {
         $errors[] = 'Full name is required.';
+    }
+    if ($city === '') {
+        $errors[] = 'Please select your city.';
     }
     if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errors[] = 'A valid email is required.';
@@ -34,35 +38,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Check if email already exists
             $stmt = $db->prepare("SELECT id FROM users WHERE email = :email LIMIT 1");
             $stmt->execute([':email' => $email]);
+
             if ($stmt->fetch()) {
                 $errors[] = 'There is already an account with this email.';
             } else {
                 $hash = password_hash($password, PASSWORD_DEFAULT);
 
                 $stmt = $db->prepare("
-                    INSERT INTO users (full_name, email, password_hash, is_admin)
-                    VALUES (:full_name, :email, :password_hash, 0)
+                    INSERT INTO users (full_name, city, email, password_hash, is_admin)
+                    VALUES (:full_name, :city, :email, :password_hash, 0)
                 ");
                 $stmt->execute([
-                    ':full_name'    => $fullName,
-                    ':email'        => $email,
-                    ':password_hash'=> $hash,
+                    ':full_name'     => $fullName,
+                    ':city'          => $city,
+                    ':email'         => $email,
+                    ':password_hash' => $hash,
                 ]);
 
                 $userId = (int)$db->lastInsertId();
 
-                // Auto login user after register
+                // Auto-login
                 $_SESSION['user'] = [
-                    'id'       => $userId,
-                    'full_name'=> $fullName,
-                    'email'    => $email,
-                    'is_admin' => 0,
+                    'id'        => $userId,
+                    'full_name' => $fullName,
+                    'city'      => $city,
+                    'email'     => $email,
+                    'is_admin'  => 0,
                 ];
 
-                $success = true;
-                // Optional: redirect to dashboard
-                // header('Location: index.php?page=dashboard');
-                // exit;
+                // Redirect to main dashboard
+                header('Location: /-CITY-CARE/City-Main/index.php');
+                exit;
             }
 
         } catch (Throwable $e) {
@@ -83,7 +89,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <script src="https://cdn.tailwindcss.com"></script>
 
     <script>
-        // Same dark mode behavior as index (if you used it)
+        // Dark mode sync with rest of site
         if (localStorage.theme === 'dark') {
             document.documentElement.classList.add('dark');
         }
@@ -91,7 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body class="bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen flex flex-col">
 
-<!-- TOP NAVBAR (similar to index.php) -->
+<!-- TOP NAVBAR -->
 <header class="border-b border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur sticky top-0 z-20">
     <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-14">
         <div class="flex items-center gap-2">
@@ -105,9 +111,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
 
         <div class="flex items-center gap-3">
-            <a href="index.php?page=dashboard"
+            <a href="/-CITY-CARE/City-Main/index.php"
                class="hidden sm:inline-flex text-xs sm:text-sm text-slate-600 dark:text-slate-300 hover:underline">
-                ← Back to dashboard
+                Home
             </a>
             <button
                 class="h-8 w-8 flex items-center justify-center rounded-full border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300 text-lg"
@@ -128,16 +134,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="bg-white dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm p-6 sm:p-8">
             <h1 class="text-xl sm:text-2xl font-semibold mb-1">Create your CityCare account</h1>
             <p class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mb-4">
-                Register to report issues and help keep Prishtina running smoothly.
+                Register to report issues and help keep your city running smoothly.
             </p>
-
-            <?php if ($success): ?>
-                <div class="mb-4 text-xs sm:text-sm px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
-                    ✅ Account created and you are now logged in.
-                    <br> 
-                    <a href="index.php?page=dashboard" class="underline">Go to dashboard</a>
-                </div>
-            <?php endif; ?>
 
             <?php if (!empty($errors)): ?>
                 <div class="mb-4 text-xs sm:text-sm px-3 py-2 rounded-lg bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300">
@@ -155,6 +153,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <input type="text" name="full_name" required
                            value="<?php echo htmlspecialchars($_POST['full_name'] ?? ''); ?>"
                            class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/70">
+                </div>
+
+                <!-- City select -->
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
+                        City
+                    </label>
+                    <select name="city" required
+                            class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/70">
+                        <option value="">Select your city</option>
+
+                        <optgroup label="Kosovo">
+                            <option value="Prishtina"   <?php echo (($_POST['city'] ?? '') === 'Prishtina') ? 'selected' : ''; ?>>Prishtina</option>
+                            <option value="Prizren"     <?php echo (($_POST['city'] ?? '') === 'Prizren') ? 'selected' : ''; ?>>Prizren</option>
+                            <option value="Peja"        <?php echo (($_POST['city'] ?? '') === 'Peja') ? 'selected' : ''; ?>>Peja</option>
+                            <option value="Gjakova"     <?php echo (($_POST['city'] ?? '') === 'Gjakova') ? 'selected' : ''; ?>>Gjakova</option>
+                            <option value="Mitrovica"   <?php echo (($_POST['city'] ?? '') === 'Mitrovica') ? 'selected' : ''; ?>>Mitrovica</option>
+                            <option value="Ferizaj"     <?php echo (($_POST['city'] ?? '') === 'Ferizaj') ? 'selected' : ''; ?>>Ferizaj</option>
+                            <option value="Gjilan"      <?php echo (($_POST['city'] ?? '') === 'Gjilan') ? 'selected' : ''; ?>>Gjilan</option>
+                            <option value="Vushtrri"    <?php echo (($_POST['city'] ?? '') === 'Vushtrri') ? 'selected' : ''; ?>>Vushtrri</option>
+                            <option value="Podujeva"    <?php echo (($_POST['city'] ?? '') === 'Podujeva') ? 'selected' : ''; ?>>Podujeva</option>
+                            <option value="Suhareka"    <?php echo (($_POST['city'] ?? '') === 'Suhareka') ? 'selected' : ''; ?>>Suhareka</option>
+                            <option value="Rahovec"     <?php echo (($_POST['city'] ?? '') === 'Rahovec') ? 'selected' : ''; ?>>Rahovec</option>
+                            <option value="Istog"       <?php echo (($_POST['city'] ?? '') === 'Istog') ? 'selected' : ''; ?>>Istog</option>
+                            <option value="Kamenica"    <?php echo (($_POST['city'] ?? '') === 'Kamenica') ? 'selected' : ''; ?>>Kamenica</option>
+                            <option value="Malisheva"   <?php echo (($_POST['city'] ?? '') === 'Malisheva') ? 'selected' : ''; ?>>Malisheva</option>
+                            <option value="Skenderaj"   <?php echo (($_POST['city'] ?? '') === 'Skenderaj') ? 'selected' : ''; ?>>Skenderaj</option>
+                            <option value="Dragash"     <?php echo (($_POST['city'] ?? '') === 'Dragash') ? 'selected' : ''; ?>>Dragash</option>
+                        </optgroup>
+
+                        <optgroup label="Albania (border regions)">
+                            <option value="Kukes"       <?php echo (($_POST['city'] ?? '') === 'Kukes') ? 'selected' : ''; ?>>Kukës</option>
+                            <option value="Tropoje"     <?php echo (($_POST['city'] ?? '') === 'Tropoje') ? 'selected' : ''; ?>>Tropojë</option>
+                            <option value="Shkoder"     <?php echo (($_POST['city'] ?? '') === 'Shkoder') ? 'selected' : ''; ?>>Shkodër</option>
+                            <option value="Puke"        <?php echo (($_POST['city'] ?? '') === 'Puke') ? 'selected' : ''; ?>>Pukë</option>
+                            <option value="Lezhe"       <?php echo (($_POST['city'] ?? '') === 'Lezhe') ? 'selected' : ''; ?>>Lezhë</option>
+                            <option value="Has"         <?php echo (($_POST['city'] ?? '') === 'Has') ? 'selected' : ''; ?>>Has</option>
+                        </optgroup>
+                    </select>
+                    <div class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+                        This helps your municipality see where reports are coming from.
+                    </div>
                 </div>
 
                 <div>
@@ -184,18 +224,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
 
                 <p class="text-[11px] text-slate-500 dark:text-slate-400">
-                    By creating an account, you agree to use CityCare only for real issues in your city.
+                    Your data is securely protected. Please report only real issues in your city.
                 </p>
 
                 <button type="submit"
                         class="w-full inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium shadow-sm">
-                    Create account
+                    Sign up
                 </button>
             </form>
         </div>
 
         <p class="mt-4 text-xs text-center text-slate-500 dark:text-slate-400">
-            Already have an account? (We can add <span class="font-semibold">login.php</span> next.)
+            Already have an account?
+            <a href="/-CITY-CARE/Forms/login.php" class="text-emerald-600 dark:text-emerald-400 font-medium hover:underline">
+                Log in
+            </a>
         </p>
     </div>
 </main>
