@@ -1,5 +1,5 @@
 <?php
-// /-CITY-CARE/admin/admin_analytics.php – CityCare Analytics
+// /-CITY-CARE/admin/admin_analytics.php – CityCare Analytics + Heat Map
 session_start();
 
 require_once __DIR__ . '/../database/config.php';
@@ -25,7 +25,8 @@ if (!$isAdmin) {
 $adminName = $currentUser['full_name'] ?? 'Admin';
 $adminCity = $currentUser['city'] ?? null;
 
-$errMsg = null;
+$errMsg     = null;
+$heatErrMsg = null;
 
 // -----------------------------------------------------
 // DB CONNECT + CHECK IF `city` COLUMN EXISTS
@@ -74,6 +75,22 @@ $cityOptions = [
     'Lezhe'     => 'Lezhë',
     'Has'       => 'Has',
 ];
+
+// -----------------------------------------------------
+// CITY COORDINATES FOR HEAT MAP
+// -----------------------------------------------------
+$cityCoords = [
+    'Prishtina' => [42.6629, 21.1655],
+    'Ferizaj'   => [42.3700, 21.1550],
+    'Prizren'   => [42.2122, 20.7397],
+    'Peja'      => [42.6590, 20.2880],
+    'Gjakova'   => [42.3800, 20.4300],
+    'Mitrovica' => [42.8859, 20.8667],
+    'Gjilan'    => [42.4636, 21.4661],
+    'Podujeva'  => [42.9100, 21.2000],
+];
+
+$defaultAllCenter = [42.6, 20.9];
 
 // -----------------------------------------------------
 // DETERMINE SELECTED CITY
@@ -251,6 +268,64 @@ foreach ($categoryStats as $row) {
         'count' => $row['count'],
     ];
 }
+
+// -----------------------------------------------------
+// LOAD ISSUE POINTS FOR HEATMAP (SAME FILTER)
+// -----------------------------------------------------
+// Heat intensity idea:
+//   open        → 1.0 (red / very dirty)
+//   in_progress → 0.75 (orange / medium dirty)
+//   resolved    → 0.35 (green-ish / cleaner)
+$heatPoints = [];
+
+try {
+    if ($hasCityColumn && $selectedCityKey !== 'all') {
+        $stmt = $db->prepare("
+            SELECT latitude, longitude, status
+            FROM issues
+            WHERE city = :city
+              AND latitude IS NOT NULL
+              AND longitude IS NOT NULL
+        ");
+        $stmt->execute([':city' => $selectedCityKey]);
+    } else {
+        $stmt = $db->query("
+            SELECT latitude, longitude, status
+            FROM issues
+            WHERE latitude IS NOT NULL
+              AND longitude IS NOT NULL
+        ");
+    }
+
+    foreach ($stmt as $row) {
+        $lat = (float)$row['latitude'];
+        $lng = (float)$row['longitude'];
+        if (!$lat && !$lng) {
+            continue;
+        }
+
+        $s = strtolower((string)$row['status']);
+        if     ($s === 'open')        $intensity = 1.0;
+        elseif ($s === 'in_progress') $intensity = 0.75;
+        elseif ($s === 'resolved')    $intensity = 0.35;
+        else                          $intensity = 0.5;
+
+        $heatPoints[] = [$lat, $lng, $intensity];
+    }
+} catch (Throwable $e) {
+    $heatErrMsg = "Could not load heat map data (database error).";
+}
+
+// -----------------------------------------------------
+// MAP CENTER + ZOOM FOR HEAT MAP
+// -----------------------------------------------------
+if ($selectedCityKey === 'all') {
+    [$centerLat, $centerLng] = $defaultAllCenter;
+    $startZoom = 8.5;
+} else {
+    [$centerLat, $centerLng] = $cityCoords[$selectedCityKey] ?? $defaultAllCenter;
+    $startZoom = 13;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -259,6 +334,11 @@ foreach ($categoryStats as $row) {
     <title>CityCare · Analytics</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Leaflet + Heat plugin for heat map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 
     <style>
         /* Donut / category wheel */
@@ -296,6 +376,22 @@ foreach ($categoryStats as $row) {
             pointer-events: none;
             line-height: 1.25;
         }
+
+        /* Heat map container + legend */
+        #heatMap {
+            height: 420px;
+        }
+        .heat-legend-bar {
+            background: linear-gradient(to right, #22c55e, #eab308, #ef4444);
+        }
+        .heat-empty-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body class="bg-slate-100 text-slate-900 min-h-screen">
@@ -312,7 +408,7 @@ foreach ($categoryStats as $row) {
                         CityCare Analytics
                     </h1>
                     <p class="text-xs text-slate-500">
-                        Overview of reports and status
+                        Overview of reports, status & pollution heat map
                     </p>
                 </div>
             </div>
@@ -479,6 +575,69 @@ foreach ($categoryStats as $row) {
         </div>
     </section>
 
+    <!-- HEAT MAP SECTION -->
+    <section class="space-y-3">
+        <!-- Info + Legend -->
+        <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm text-sm flex flex-wrap items-center justify-between gap-4">
+            <div>
+                <h2 class="text-sm font-semibold mb-1">Pollution heat map</h2>
+                <p class="text-xs text-slate-500 max-w-md">
+                    Each report adds heat to the map. Many open reports = hot red zones.
+                    Resolved reports still contribute a little intensity to show history.
+                </p>
+                <p class="mt-1 text-[11px] text-slate-400">
+                    Current filter: <span class="font-medium"><?php echo htmlspecialchars($selectedCityLabel); ?></span>
+                </p>
+            </div>
+            <div class="flex flex-col gap-1 text-xs text-slate-600">
+                <div class="flex items-center gap-2">
+                    <div class="heat-legend-bar h-2 w-40 rounded-full border border-slate-200"></div>
+                    <div class="flex justify-between w-40 text-[10px]">
+                        <span>Clean</span>
+                        <span>Medium</span>
+                        <span>Dirty</span>
+                    </div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="inline-flex items-center gap-1">
+                        <span class="w-3 h-3 rounded-full bg-green-500"></span> Low reports
+                    </span>
+                    <span class="inline-flex items-center gap-1">
+                        <span class="w-3 h-3 rounded-full bg-yellow-400"></span> Some reports
+                    </span>
+                    <span class="inline-flex items-center gap-1">
+                        <span class="w-3 h-3 rounded-full bg-red-500"></span> Many reports
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <?php if ($heatErrMsg): ?>
+            <div class="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm mb-2">
+                <?php echo htmlspecialchars($heatErrMsg); ?>
+            </div>
+        <?php endif; ?>
+
+        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden relative">
+            <div class="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                <h2 class="text-sm font-semibold">Heat Map</h2>
+                <span class="text-[11px] text-slate-400">
+                    Red = many open issues · zoom in for more detail
+                </span>
+            </div>
+            <div class="relative">
+                <div id="heatMap" class="bg-slate-100"></div>
+                <?php if (empty($heatPoints)): ?>
+                    <div class="heat-empty-overlay">
+                        <div class="px-4 py-2 rounded-full bg-white/90 border border-slate-200 text-xs text-slate-500 shadow-sm">
+                            No reports with coordinates for this filter yet.
+                        </div>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+    </section>
+
     <!-- Recent issues -->
     <section class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
         <h2 class="text-sm font-semibold mb-3">Recent reports</h2>
@@ -486,7 +645,7 @@ foreach ($categoryStats as $row) {
             <p class="text-sm text-slate-500">No recent reports.</p>
         <?php else: ?>
             <ul class="divide-y divide-slate-100 text-sm">
-                <?php foreach ($recentIssues as $i): 
+                <?php foreach ($recentIssues as $i):
                     $catName = $i['category'] ?: 'Other';
                     $color   = $segmentColors[$catName] ?? '#9CA3AF';
                 ?>
@@ -578,6 +737,36 @@ foreach ($categoryStats as $row) {
         currentAngle = endAngle;
     });
 })();
+
+// Heat map init
+document.addEventListener('DOMContentLoaded', function () {
+    const centerLat   = <?php echo json_encode($centerLat); ?>;
+    const centerLng   = <?php echo json_encode($centerLng); ?>;
+    const startZoom   = <?php echo json_encode($startZoom); ?>;
+    const heatPoints  = <?php echo json_encode($heatPoints, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT|JSON_HEX_AMP); ?>;
+
+    const map = L.map('heatMap').setView([centerLat, centerLng], startZoom);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    if (heatPoints.length > 0) {
+        L.heatLayer(heatPoints, {
+            radius: 45,       // bigger blobs = more visible
+            blur: 28,
+            maxZoom: 18,
+            minOpacity: 0.35, // keep visible even when zoomed out
+            gradient: {
+                0.0: '#22c55e',  // green
+                0.4: '#eab308',  // yellow
+                0.7: '#f97316',  // orange
+                1.0: '#ef4444'   // red
+            }
+        }).addTo(map);
+    }
+});
 </script>
 
 </body>

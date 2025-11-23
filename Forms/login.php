@@ -59,7 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     if ($isAdminLevel >= 1) {
                         // Admin or Super Admin → HEAT MAP
-                        header('Location: /-CITY-CARE/admin/admin_heatmap.php');
+                        header('Location: /-CITY-CARE/admin/admin_analytics.php');
                     } else {
                         // Normal citizen → main dashboard
                         header('Location: /-CITY-CARE/City-Main/index.php');
