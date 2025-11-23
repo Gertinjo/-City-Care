@@ -161,9 +161,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <div class="text-xs text-slate-500">Smart Reporting Platform</div>
             </div>
         </div>
-        <a href="../City-Main/index.php" class="text-xs text-slate-500 hover:text-slate-700">
-            ← Back to dashboard
-        </a>
     </div>
 
     <h1 class="text-xl font-semibold mb-1">Create your account</h1>

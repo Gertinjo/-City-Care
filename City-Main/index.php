@@ -40,21 +40,30 @@ $reportSuccess  = isset($_GET['reported']) ? true : false;
 // HANDLE REPORT FORM SUBMIT
 // -----------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $page === 'report') {
-    $title       = trim($_POST['title'] ?? '');
-    $category    = trim($_POST['category'] ?? '');
-    $location    = trim($_POST['location'] ?? '');
-    $description = trim($_POST['description'] ?? '');
-    $anonymous   = isset($_POST['anonymous']) ? 1 : 0;
-    $lat         = isset($_POST['lat']) && $_POST['lat'] !== '' ? (float)$_POST['lat'] : null;
-    $lng         = isset($_POST['lng']) && $_POST['lng'] !== '' ? (float)$_POST['lng'] : null;
+    $title          = trim($_POST['title'] ?? '');
+    $categorySelect = trim($_POST['category'] ?? '');
+    $categoryOther  = trim($_POST['category_other'] ?? '');
+    $location       = trim($_POST['location'] ?? '');
+    $description    = trim($_POST['description'] ?? '');
+    $anonymous      = isset($_POST['anonymous']) ? 1 : 0;
+    $lat            = isset($_POST['lat']) && $_POST['lat'] !== '' ? (float)$_POST['lat'] : null;
+    $lng            = isset($_POST['lng']) && $_POST['lng'] !== '' ? (float)$_POST['lng'] : null;
+
+    // If "Other" selected, use the custom text as category
+    $category = $categorySelect;
+    if ($categorySelect === 'Other' && $categoryOther !== '') {
+        $category = $categoryOther;
+    }
 
     if ($title === '' || $category === '') {
         $reportError = 'Title and category are required.';
     } else {
         $photoPath = null;
 
-        // optional photo upload
-        if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+        // ---- PHOTO IS NOW REQUIRED ----
+        if (empty($_FILES['photo']['name']) || $_FILES['photo']['error'] !== UPLOAD_ERR_OK) {
+            $reportError = 'A photo is required for every report.';
+        } else {
             $allowedExt = ['jpg', 'jpeg', 'png'];
             $uploadDir  = __DIR__ . '/uploads/issues';
 
@@ -66,42 +75,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $page === 'report') {
             $tmpPath      = $_FILES['photo']['tmp_name'];
             $ext          = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
 
-            if (in_array($ext, $allowedExt, true)) {
+            if (!in_array($ext, $allowedExt, true)) {
+                $reportError = 'Only JPG and PNG images are allowed.';
+            } else {
                 $newName = 'issue_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
                 $target  = $uploadDir . '/' . $newName;
-                if (move_uploaded_file($tmpPath, $target)) {
+
+                if (!move_uploaded_file($tmpPath, $target)) {
+                    $reportError = 'Failed to upload the photo. Please try again.';
+                } else {
+                    // web path
                     $photoPath = 'uploads/issues/' . $newName;
                 }
             }
         }
 
-        try {
-            $db = getDB();
+        // Only insert into DB if no errors (title/category + photo ok)
+        if ($reportError === null) {
+            try {
+                $db = getDB();
 
-            $stmt = $db->prepare("
-                INSERT INTO issues 
-                    (title, category, city, status, location_text, latitude, longitude, description, photo_path, is_anonymous, created_by) 
-                VALUES 
-                    (:title, :category, :city, 'open', :location_text, :latitude, :longitude, :description, :photo_path, :is_anonymous, :created_by)
-            ");
+                $stmt = $db->prepare("
+                    INSERT INTO issues 
+                        (title, category, city, status, location_text, latitude, longitude, description, photo_path, is_anonymous, created_by) 
+                    VALUES 
+                        (:title, :category, :city, 'open', :location_text, :latitude, :longitude, :description, :photo_path, :is_anonymous, :created_by)
+                ");
 
-            $stmt->execute([
-                ':title'         => $title,
-                ':category'      => $category,
-                ':city'          => $userCity,
-                ':location_text' => $location !== '' ? $location : null,
-                ':latitude'      => $lat,
-                ':longitude'     => $lng,
-                ':description'   => $description !== '' ? $description : null,
-                ':photo_path'    => $photoPath,
-                ':is_anonymous'  => $anonymous,
-                ':created_by'    => $userId,
-            ]);
+                $stmt->execute([
+                    ':title'         => $title,
+                    ':category'      => $category,
+                    ':city'          => $userCity,
+                    ':location_text' => $location !== '' ? $location : null,
+                    ':latitude'      => $lat,
+                    ':longitude'     => $lng,
+                    ':description'   => $description !== '' ? $description : null,
+                    ':photo_path'    => $photoPath,
+                    ':is_anonymous'  => $anonymous,
+                    ':created_by'    => $userId,
+                ]);
 
-            header('Location: index.php?page=dashboard&reported=1');
-            exit;
-        } catch (Throwable $e) {
-            $reportError = 'Could not save your report (database error).';
+                header('Location: index.php?page=dashboard&reported=1');
+                exit;
+            } catch (Throwable $e) {
+                $reportError = 'Could not save your report (database error).';
+            }
         }
     }
 }
@@ -172,9 +190,9 @@ try {
     }
 
     // issues with coordinates for map
-    // IMPORTANT CHANGE: hide resolved issues after 10 minutes
+    // IMPORTANT: hide resolved issues from map after 10 minutes
     $stmt = $db->prepare("
-        SELECT id, title, category, status, location_text, latitude, longitude, created_at, updated_at
+        SELECT id, title, category, status, location_text, latitude, longitude, photo_path, created_at, updated_at
         FROM issues
         WHERE city = :city
           AND latitude IS NOT NULL
@@ -198,6 +216,7 @@ try {
             'location' => $row['location_text'],
             'lat'      => (float)$row['latitude'],
             'lng'      => (float)$row['longitude'],
+            'photo'    => $row['photo_path'], // used in popup
         ];
     }
 } catch (Throwable $e) {
@@ -297,6 +316,12 @@ try {
                     <span>Profile</span>
                     <span class="text-xs text-slate-400"><?php  echo htmlspecialchars($userName);?></span>
                 </a>
+                <a href="logout.php"
+                class="flex items-center justify-between px-3 py-2 rounded-xl hover:bg-red-100 dark:hover:bg-red-900/40 text-red-600 dark:text-red-300">
+                <span>Log out</span>
+                <span class="text-xs text-slate-400">See you soon!</span>
+</a>
+
             </nav>
 
             <div class="text-[11px] text-slate-400 dark:text-slate-500">
@@ -401,7 +426,7 @@ try {
                         <div class="bg-white dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm">
                             <div class="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
                                 <h2 class="text-sm font-semibold"><?php echo htmlspecialchars($cityName); ?> Map</h2>
-                                <span class="text-[11px] text-slate-400">click markers for details</span>
+                                <span class="text-[11px] text-slate-400">hover markers for details</span>
                             </div>
                             <div id="cityMap" class="h-56 bg-slate-100 dark:bg-slate-900 rounded-b-2xl"></div>
                         </div>
@@ -414,7 +439,7 @@ try {
                             </p>
                             <ul class="text-xs space-y-1 text-slate-200">
                                 <li>• Red = Open, Orange = Working, Green = Recently Resolved</li>
-                                <li>• Click a marker to see issue details</li>
+                                <li>• Hover a marker to see issue details and photo</li>
                             </ul>
                         </div>
                     </div>
@@ -452,7 +477,7 @@ try {
                             </div>
                             <div>
                                 <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Category</label>
-                                <select name="category" required
+                                <select name="category" id="categorySelect" required
                                         class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2">
                                     <option value="">Choose…</option>
                                     <option>Streetlight</option>
@@ -462,13 +487,24 @@ try {
                                     <option>Noise / Safety</option>
                                     <option>Other</option>
                                 </select>
+
+                                <!-- shown only when "Other" is selected -->
+                                <div id="otherCategoryWrapper" class="mt-2 hidden">
+                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
+                                        Other category
+                                    </label>
+                                    <input type="text" name="category_other"
+                                           class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2"
+                                           placeholder="Describe the category…">
+                                </div>
                             </div>
                         </div>
 
                         <div>
                             <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Location (address or description)</label>
-                            <input type="text" name="location"
-                                   class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2">
+                            <input type="text" name="location" id="locationInput"
+                                   class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2"
+                                   placeholder="Click on the map to auto-fill coordinates">
                             <p class="mt-1 text-[11px] text-slate-400">You can also pick the exact spot on the map.</p>
                         </div>
 
@@ -489,9 +525,14 @@ try {
 
                         <div class="grid md:grid-cols-[1.5fr,1fr] gap-4 items-start">
                             <div>
-                                <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Photo (optional)</label>
-                                <input type="file" name="photo"
+                                <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
+                                    Photo <span class="text-red-500">*</span>
+                                </label>
+                                <input type="file" name="photo" accept=".jpg,.jpeg,.png" required
                                        class="block w-full text-xs text-slate-500 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-emerald-500 file:text-white file:text-xs hover:file:bg-emerald-600">
+                                <p class="mt-1 text-[11px] text-slate-400">
+                                    Please upload a clear JPG or PNG photo of the problem.
+                                </p>
                             </div>
                             <div class="bg-slate-50 dark:bg-slate-900 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl p-3 text-xs text-slate-500 dark:text-slate-400">
                                 <div class="font-semibold text-slate-600 dark:text-slate-200 mb-1">What happens next?</div>
@@ -547,22 +588,47 @@ document.addEventListener('DOMContentLoaded', function () {
     const issues = <?php echo json_encode($issuesForMap, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT|JSON_HEX_AMP); ?>;
 
     issues.forEach(issue => {
-        const color = issue.status === 'open'
-            ? 'red'
-            : (issue.status === 'in_progress' ? 'orange' : 'green');
+        const status = (issue.status || '').toLowerCase();
+        const color =
+            status === 'open'
+                ? 'red'
+                : (status === 'in_progress' ? 'orange' : 'green');
 
         const marker = L.circleMarker([issue.lat, issue.lng], {
             radius: 7,
-            color,
+            color: color,
             fillColor: color,
             fillOpacity: 0.9
         }).addTo(map);
 
-        marker.bindPopup(
+        let html =
             `<strong>${issue.title}</strong><br>` +
             `${issue.category}<br>` +
-            (issue.location ? `<small>${issue.location}</small>` : '')
-        );
+            (issue.location ? `<small>${issue.location}</small><br>` : '');
+
+        if (issue.photo) {
+            html += `
+                <div style="margin-top:6px;">
+                    <img src="${issue.photo}"
+                         alt="Issue photo"
+                         style="max-width:180px;border-radius:8px;display:block;">
+                </div>
+            `;
+        }
+
+        // Disable autoPan so the map doesn't "jump" when popup opens
+        marker.bindPopup(html, {
+            autoPan: false,
+            closeButton: false
+        });
+
+        // Open popup on hover
+        marker.on('mouseover', function () {
+            this.openPopup();
+        });
+        marker.on('mouseout', function () {
+            this.closePopup();
+        });
     });
 });
 </script>
@@ -572,6 +638,23 @@ document.addEventListener('DOMContentLoaded', function () {
     const centerLat = <?php echo json_encode($mapLat); ?>;
     const centerLng = <?php echo json_encode($mapLng); ?>;
 
+    // ----- OTHER CATEGORY TOGGLE -----
+    const categorySelect = document.getElementById('categorySelect');
+    const otherWrapper   = document.getElementById('otherCategoryWrapper');
+
+    if (categorySelect && otherWrapper) {
+        const toggleOther = () => {
+            if (categorySelect.value === 'Other') {
+                otherWrapper.classList.remove('hidden');
+            } else {
+                otherWrapper.classList.add('hidden');
+            }
+        };
+        categorySelect.addEventListener('change', toggleOther);
+        toggleOther(); // initial
+    }
+
+    // ----- MAP -----
     const map = L.map('reportMap').setView([centerLat, centerLng], 13);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -580,8 +663,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }).addTo(map);
 
     let marker = null;
-    const latField = document.getElementById('latField');
-    const lngField = document.getElementById('lngField');
+    const latField      = document.getElementById('latField');
+    const lngField      = document.getElementById('lngField');
+    const locationInput = document.getElementById('locationInput');
 
     map.on('click', function (e) {
         const lat = e.latlng.lat;
@@ -590,8 +674,16 @@ document.addEventListener('DOMContentLoaded', function () {
         if (marker) marker.setLatLng(e.latlng);
         else marker = L.marker(e.latlng).addTo(map);
 
-        latField.value = lat.toFixed(6);
-        lngField.value = lng.toFixed(6);
+        const latFixed = lat.toFixed(6);
+        const lngFixed = lng.toFixed(6);
+
+        latField.value = latFixed;
+        lngField.value = lngFixed;
+
+        // Auto-fill location text with coordinates
+        if (locationInput) {
+            locationInput.value = latFixed + ', ' + lngFixed;
+        }
     });
 });
 </script>
